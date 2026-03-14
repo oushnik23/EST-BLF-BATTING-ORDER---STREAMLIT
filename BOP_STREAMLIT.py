@@ -22,7 +22,7 @@ st.markdown("""
     color:#2E86C1;
     font-size:42px;
     font-weight:700;
-    margin-top:15px;
+    margin-top:25px;
     margin-bottom:7px;
 }
 
