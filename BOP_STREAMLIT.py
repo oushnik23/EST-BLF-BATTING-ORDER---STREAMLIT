@@ -406,13 +406,17 @@ def build_fast_query(user_input):
     area_condition = ""
 
     # ---------------- AREA DETECTION ---------------- #
-    if "assam" in text or "as" in text:
+    text = f" {text} "
+    text_clean = f" {text} "
+    
+    if re.search(r"\bassam\b", text_clean):
         area_condition = 'Area = "AS"'
-    elif "dooars" in text or "do" in text or "tr" in text:
+    elif re.search(r"\b(dooars|do|tr)\b", text_clean):
         area_condition = 'Area IN ("DO","TR")'
-    elif "ca" in text or "tp" in text:
+    elif re.search(r"\b(ca|tp)\b", text_clean):
         area_condition = 'Area IN ("CA","TP")'
-
+        
+    
     # -------- Detect Centre -------- #
     centre_condition = 'Centre IN ("KOL","GUW","SIL")'
 
@@ -423,8 +427,7 @@ def build_fast_query(user_input):
     elif "Siliguri" in text:
         centre_condition = 'Centre = "SIL"'
 
-    
-
+  
 # ---------------- METRIC ---------------- #
     if "price" in text or "avg" in text:
         order_by = "AvgPrice DESC"
@@ -460,14 +463,20 @@ def build_fast_query(user_input):
         end = int(match_range.group(3))
         offset = start - 1
         top_n = end - start + 1
+        
+    cutoff = None
+
+    match_cutoff = re.search(r"(?:cut[- ]?off|above|greater than|more than)\s*(\d+)", text)
+    if match_cutoff:
+        cutoff = int(match_cutoff.group(1))
 
     # ---------------- SQL ---------------- #
     query = f"""
     SELECT
         GardenMDM,
-        ROUND( SAFE_DIVIDE(SUM(Value) , SUM(TotalWeight)) ,2) AS AvgPrice,
-        SUM(TotalWeight) AS Sold_Qty
-
+        SUM(TotalWeight) AS Sold_Qty,
+        ROUND( SAFE_DIVIDE(SUM(Value) , SUM(TotalWeight)) ,2) AS AvgPrice
+        
     FROM `data-warehousing-prod.EasyReports.SaleTransactionView`
 
     WHERE Season = 2025
@@ -477,6 +486,8 @@ def build_fast_query(user_input):
         {f"AND {area_condition}" if area_condition else ""}
 
     GROUP BY GardenMDM
+    
+    {f"HAVING SUM(TotalWeight) > {cutoff}" if cutoff else ""}
 
     ORDER BY {order_by}
 
@@ -501,11 +512,11 @@ def extract_garden_name(user_input):
         "kolkata", "kol", "guwahati", "guw", "siliguri", "sil",
         "assam", "dooars", "tr", "ca", "tp",
         "for", "and", "in", "of", "by", "upto", "saleno","from", "to", "till", "upto","saleno", "sale",
-        "grade", "gradewise", "gradewise", "gradewise", "wise","performance"]
+        "grade", "gradewise", "gradewise", "gradewise", "wise","performance","with"]
 
     text = re.sub(r"\d+", "", text)
     text = re.sub(r"[^a-zA-Z\s]", " ", text)
-    text = re.sub(r"\b(give|me|show|tell|get|find|performance|report|analysis)\b", "", text)
+    text = re.sub(r"\b(give|me|show|tell|get|find|with|performance|report|analysis)\b", "", text)
 
     words = text.split()
     filtered_words = [w for w in words if w not in stopwords]
