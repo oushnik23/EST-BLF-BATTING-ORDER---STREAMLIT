@@ -311,6 +311,10 @@ if st.button("✉️ Send Combined Email"):
 
 st.markdown("---")
 
+from groq import Groq
+
+client = Groq(api_key="your_api")
+
 # 1.Detect Query Type
 
 def is_simple_query(user_input):
@@ -342,7 +346,7 @@ def build_grade_query(user_input):
         centre_condition = 'Centre = "KOL"'
     elif "guwahati" in text or "guw" in text:
         centre_condition = 'Centre = "GUW"'
-    elif "siliguri" in text or "sil" in text:
+    elif re.search(r"\bsiliguri\b", text) or (" sil " in f" {text} "):
         centre_condition = 'Centre = "SIL"'
 
     # -------- YEAR LOGIC (same as yours) -------- #
@@ -369,6 +373,7 @@ def build_grade_query(user_input):
         Season,
         GardenMDM,SubTeaType,
         GradeMDM,
+        coalesce(SUM(Value)) AS Total_Value,
         SUM(TotalWeight) AS Sold_Qty,
         ROUND(SAFE_DIVIDE(SUM(Value), SUM(TotalWeight)),2) AS AvgPrice
 
@@ -382,7 +387,7 @@ def build_grade_query(user_input):
 
     GROUP BY Season, GardenMDM, GradeMDM,SubTeaType
 
-    ORDER BY Season DESC, Sold_Qty DESC
+    Having Season is not null
     """
 
     return query
@@ -483,25 +488,24 @@ def build_fast_query(user_input):
 
 # 3.Groq AI (for complex queries)
 
-from groq import Groq
-
-client = Groq(api_key="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")  
+  
 
 def extract_garden_name(user_input):
 
     text = user_input.lower()
 
-    stopwords = [
+    stopwords = ["give", "me", "show", "tell", "find", "get",
         "qty", "quantity", "avg", "average", "price",
         "top", "highest", "lowest", "compare", "rank",
         "last", "year", "years", "season",
         "kolkata", "kol", "guwahati", "guw", "siliguri", "sil",
         "assam", "dooars", "tr", "ca", "tp",
         "for", "and", "in", "of", "by", "upto", "saleno","from", "to", "till", "upto","saleno", "sale",
-        "grade", "gradewise", "gradewise", "gradewise", "wise"]
+        "grade", "gradewise", "gradewise", "gradewise", "wise","performance"]
 
     text = re.sub(r"\d+", "", text)
     text = re.sub(r"[^a-zA-Z\s]", " ", text)
+    text = re.sub(r"\b(give|me|show|tell|get|find|performance|report|analysis)\b", "", text)
 
     words = text.split()
     filtered_words = [w for w in words if w not in stopwords]
@@ -509,8 +513,8 @@ def extract_garden_name(user_input):
     if len(filtered_words) == 1:
         return filtered_words[0]
 
-    if len(filtered_words) > 1:
-        return max(filtered_words, key=len)
+    if len(filtered_words) >= 1:
+        return " ".join(filtered_words)
 
     return None  
 
@@ -529,8 +533,8 @@ Query:
 """
 
     response = client.chat.completions.create(
-        messages=[{"role": "user", "content": prompt}],
-        model="llama3-70b-8192"
+        messages=[{"role": "user", "content": prompt}],model="llama-3.1-8b-instant"
+        #model="llama3-70b-8192"
     )
 
     return response.choices[0].message.content.strip().lower()
@@ -579,7 +583,8 @@ def build_garden_trend_query(user_input):
         centre_condition = 'Centre = "KOL"'
     elif "guwahati" in text or "guw" in text:
         centre_condition = 'Centre = "GUW"'
-    elif re.search(r"\bsiliguri\b|\bsil\b", text):
+    elif re.search(r"\bsiliguri\b", text) or (" sil " in f" {text} "):
+#    elif re.search(r"\bsiliguri\b|\bsil\b", text):
         centre_condition = 'Centre = "SIL"'
     
     #SaleNo Logic-----------------------------------------------
@@ -618,8 +623,7 @@ def build_garden_trend_query(user_input):
 
     end_year = 2025
     years = None
-    
-        
+          
     year_match = re.search(r"\b(20\d{2})\b", text)
     if year_match:
         end_year = int(year_match.group(1))
@@ -637,7 +641,7 @@ def build_garden_trend_query(user_input):
     # -------- SQL -------- #
     query = f"""
     SELECT
-        Season,
+        Season,SellerGroup,
         GardenMDM,
         SUM(TotalWeight) AS Sold_Qty,
         ROUND(SAFE_DIVIDE(SUM(Value), SUM(TotalWeight)),2) AS AvgPrice
@@ -651,7 +655,7 @@ def build_garden_trend_query(user_input):
         AND LOWER(GardenMDM) LIKE '%{garden}%'
         AND IF(SaleNo>=1 AND SaleNo<=13, 53+SaleNo, SaleNo) BETWEEN {start_sale} AND {end_sale}
 
-    GROUP BY Season, GardenMDM
+    GROUP BY Season,SellerGroup, GardenMDM
 
     ORDER BY Season DESC
     """
@@ -701,13 +705,12 @@ st.markdown('<div class="section-header">🤖 Type Your Query</div>', unsafe_all
 
 user_query = st.text_input(
     "",
-    placeholder="e.g. Borjan, AS garden, top 10 gardens by price"
-)
+    placeholder="e.g. Borjan, AS garden, top 10 gardens by price")
 
 def is_grade_query(user_input):
     text = user_input.lower()
-    keywords = ["grade", "gradewise", "grade wise"]
-    return any(word in text for word in keywords)
+    
+    return any(word in text for word in ["grade", "gradewise", "grade wise"]) and get_garden_name(user_input) is not None
 
 if st.button("🚀 Run Smart Query"):
 
@@ -717,37 +720,100 @@ if st.button("🚀 Run Smart Query"):
 
             try:
                 # 🔥 Decide path
-                text = user_query.lower()              
-                if re.search(r"\b(20\d{2})\b", text) or ("last" in text and "year" in text):
+                text = user_query.lower()
+                
+                if is_grade_query(user_query):
+                    sql = build_grade_query(user_query)
+                    st.info("📊 Grade-wise Mode")
+                
+                elif re.search(r"\b(20\d{2})\b", text) or ("last" in text and "year" in text):
                     sql = build_garden_trend_query(user_query)
                     st.info("📊 Garden Trend Mode")
                     
-                    #garden = extract_garden_name(text)
-                    #st.write("Garden:", garden.title())
-
                 elif is_simple_query(user_query):
                     sql = build_fast_query(user_query)
                     st.info("⚡ Fast Mode")
-
+                    
                 else:
                     sql = generate_ai_sql(user_query)
                     sql = clean_sql(sql)
                     st.info("🧠 AI Mode")
-
+                
+                # 🔍 Show SQL
                 st.code(sql, language="sql")
 
                 df = run_query(sql)
+                st.session_state["df"] = df
+                st.session_state["user_query"] = user_query
                 
- 
-
-    # ---------------- DISPLAY ---------------- #
-                    #st.dataframe(styled_df, use_container_width=True)
-
-                st.success("✅ Data fetched")
-                st.dataframe(df, use_container_width=True)
-
+                if df.empty:
+                    st.warning("⚠️ No data return")
+                    st.stop()
             except Exception as e:
                 st.error(str(e))
-
     else:
         st.warning("Please enter query")
+
+# ================= DISPLAY SECTION ================= #
+                
+if "df" in st.session_state:
+
+    df = st.session_state["df"]
+    user_query = st.session_state["user_query"]
+
+    view_type = st.radio("📊 View Type", ["Normal", "Tabular Report"])
+
+    if view_type == "Normal":
+        st.success("✅ Data fetched")
+        st.dataframe(df, use_container_width=True)
+
+    else:
+        # 🔥 ONLY Grade Query → Pivot
+        if is_grade_query(user_query):
+
+            st.info("📊 Grade-wise Pivot View")
+            
+            summary=df.groupby(['Season','GardenMDM','SubTeaType','GradeMDM'],
+                               as_index=False).agg({'Sold_Qty':'sum','Total_Value':'sum'})
+            summary['Avg']=summary['Total_Value'] / summary['Sold_Qty']
+            #summary.drop(['Total_Value'],inplace=True,axis=1)
+            
+            detail = summary.copy()
+                        
+            subtotal = summary.groupby(
+        ['Season','GardenMDM', 'SubTeaType'],as_index=False).agg({'Sold_Qty': 'sum','Total_Value': 'sum'})
+            subtotal['Avg'] = subtotal['Total_Value'] / subtotal['Sold_Qty']
+            subtotal['GradeMDM'] = "SUBTOTAL"
+                        
+            grand = summary.groupby(['Season','GardenMDM'],as_index=False).agg({
+        'Sold_Qty': 'sum','Total_Value': 'sum'})
+            grand['Avg'] = grand['Total_Value'] / grand['Sold_Qty']
+            grand['SubTeaType'] = "ALL"
+            grand['GradeMDM'] = "GRAND TOTAL"
+                        
+            final_df = pd.concat([detail, subtotal, grand], ignore_index=True)
+            
+            final_df = final_df.drop(columns=['Total_Value'])
+                 
+                                         
+            grade_sequence = ["BOPL", "BPS", "BOP", "BOPSM", "BP", "PF", "OF", "PD", "D", "CD",
+    "BOPL1", "BPS1", "BOP1", "BOPSM1", "BP1", "PF1", "OF1", "PD1", "D1", "CD1","SUBTOTAL","GRAND TOTAL"]
+                        
+            grade_order = {g: i for i, g in enumerate(grade_sequence)}
+            ps_order = {'PRIMARY': 0, 'SECONDARY': 1, 'ALL': 2}
+            
+            final_df['ps_rank'] = final_df['SubTeaType'].map(ps_order).fillna(999)
+            final_df["grade_sort"] = final_df["GradeMDM"].map(grade_order)
+            
+            final_df.loc[final_df["GradeMDM"] == "Subtotal", "grade_sort"] = 998
+            final_df.loc[final_df["GradeMDM"] == "Grand Total", "grade_sort"] = 999
+            
+                       
+            final_df = final_df.sort_values(by=["GardenMDM", "Season", "ps_rank", "grade_sort"],
+    ascending=[True, False, True, True])
+            
+            final_df = final_df.drop(columns=["grade_sort","ps_rank"])
+            final_df["Avg"] = final_df["Avg"].round(0).astype(int)
+                                   
+            st.success("✅ Data fetched")
+            st.dataframe(final_df, use_container_width=True)
