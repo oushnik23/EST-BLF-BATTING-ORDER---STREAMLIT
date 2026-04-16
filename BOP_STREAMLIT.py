@@ -313,7 +313,7 @@ st.markdown("---")
 
 from groq import Groq
 
-client = Groq(api_key="your_api")
+client = Groq(api_key="api_key")
 
 # 1.Detect Query Type
 
@@ -652,10 +652,11 @@ def build_garden_trend_query(user_input):
     # -------- SQL -------- #
     query = f"""
     SELECT
-        Season,SellerGroup,
-        GardenMDM,
-        SUM(TotalWeight) AS Sold_Qty,
-        ROUND(SAFE_DIVIDE(SUM(Value), SUM(TotalWeight)),2) AS AvgPrice
+    Case when CAST(substring(FinYear,1,4) as INT64) = Season then Season else 0 end as FYear,
+    SellerGroup,
+    GardenMDM,
+    SUM(TotalWeight) AS Sold_Qty,
+    ROUND(SAFE_DIVIDE(SUM(Value), SUM(TotalWeight)),2) AS AvgPrice
         
     FROM `data-warehousing-prod.EasyReports.SaleTransactionView`
 
@@ -663,10 +664,12 @@ def build_garden_trend_query(user_input):
         AND EstBlf = "EST"
         AND Category = "CTC"
         AND {centre_condition}
-        AND LOWER(GardenMDM) LIKE '%{garden}%'
+        AND LOWER(GardenMDM) = '{garden}'
         AND IF(SaleNo>=1 AND SaleNo<=13, 53+SaleNo, SaleNo) BETWEEN {start_sale} AND {end_sale}
 
-    GROUP BY Season,SellerGroup, GardenMDM
+    GROUP BY FYear,Season,SellerGroup, GardenMDM
+    
+    Having FYear<>0
 
     ORDER BY Season DESC
     """
