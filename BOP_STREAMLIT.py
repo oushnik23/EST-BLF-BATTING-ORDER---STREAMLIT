@@ -497,9 +497,85 @@ def build_fast_query(user_input):
 
     return query
 
-# 3.Groq AI (for complex queries)
+#----------------BuyerGroup----------------#
 
-  
+def build_buyer_query(user_input):
+
+    text = user_input.lower()
+    garden = get_garden_name(user_input)
+
+    # 🔥 TOP N detection (reuse your logic)
+    top_n = 10
+    match_top = re.search(r"top\s+(\d+)", text)
+    if match_top:
+        top_n = int(match_top.group(1))
+        
+        years = 2
+        
+        match = re.search(r"last\s+(\d+)", text)
+        if match:
+            years = int(match.group(1))
+
+        end_year = 2025
+        years = None
+              
+        year_match = re.search(r"\b(20\d{2})\b", text)
+        if year_match:
+            end_year = int(year_match.group(1))
+            years = 1
+            
+        match = re.search(r"last\s+(\d+)", text)
+        if match:
+            years = int(match.group(1))
+            
+        if years is None:
+            years = 2
+        
+        start_year = end_year - (years - 1)
+    
+    if "avg" in text or "price" in text:
+        rank_metric = "SAFE_DIVIDE(SUM(Total_Value), SUM(Buyer_Qty)) DESC"
+    elif "qty" in text or "quantity" in text:
+        rank_metric = "SUM(Buyer_Qty) DESC"
+    else:
+    # default
+        rank_metric = "SUM(Buyer_Qty) DESC"
+
+    query = f"""
+    WITH t1 AS (
+    SELECT CASE WHEN CAST(SUBSTRING(FinYear,1,4) AS INT64) = Season THEN Season ELSE 0 END AS FYear,
+
+        BuyerGroup,
+        GardenMDM,
+
+        SUM(Value) AS Total_Value,
+        SUM(TotalWeight) AS Buyer_Qty
+
+    FROM `data-warehousing-prod.EasyReports.SaleTransactionView`
+
+    WHERE Season BETWEEN {start_year} AND {end_year} And EstBlf = "EST" AND Category = "CTC" AND Centre IN ("KOL","GUW","SIL") 
+    AND LOWER(GardenMDM) LIKE '%{garden}%'
+
+    GROUP BY FYear, BuyerGroup, GardenMDM, FinYear, Season
+
+    HAVING BuyerGroup <> "" AND FYear <> 0)
+
+    SELECT FYear,GardenMDM,BuyerGroup,
+        
+        Round(SUM(Buyer_Qty),0) AS Buyer_Qty,
+        Round(SUM(Total_Value)/SUM(Buyer_Qty),2) as Avg,
+
+    DENSE_RANK() OVER (PARTITION BY FYear, GardenMDM ORDER BY {rank_metric} ) AS Buyer_Rank
+
+    FROM t1
+
+    GROUP BY FYear, BuyerGroup, GardenMDM
+
+    QUALIFY Buyer_Rank <= {top_n}"""
+
+    return query
+
+# 3.Groq AI (for complex queries)
 
 def extract_garden_name(user_input):
 
@@ -512,11 +588,14 @@ def extract_garden_name(user_input):
         "kolkata", "kol", "guwahati", "guw", "siliguri", "sil",
         "assam", "dooars", "tr", "ca", "tp",
         "for", "and", "in", "of", "by", "upto", "saleno","from", "to", "till", "upto","saleno", "sale",
-        "grade", "gradewise", "gradewise", "gradewise", "wise","performance","with"]
+        "grade", "gradewise", "gradewise", "gradewise", "wise","performance","with","buyers"]
 
     text = re.sub(r"\d+", "", text)
     text = re.sub(r"[^a-zA-Z\s]", " ", text)
-    text = re.sub(r"\b(give|me|show|tell|get|find|with|performance|report|analysis)\b", "", text)
+    text = re.sub(r"\b(give|me|show|tell|get|find|with|performance|report|analysis|buyers)\b", "", text)
+    text = re.sub(r"\bas per\b", "", text)
+    text = re.sub(r"\bbased on\b", "", text)
+    text = re.sub(r"\baccording to\b", "", text)
 
     words = text.split()
     filtered_words = [w for w in words if w not in stopwords]
@@ -590,13 +669,34 @@ def build_garden_trend_query(user_input):
     # -------- Detect Centre -------- #
     centre_condition = 'Centre IN ("KOL","GUW","SIL")'
 
-    if "kolkata" in text or "kol" in text:
+    if ("kolkata" in text and "guwahati" in text) or ("kol" in text and "guw" in text):
+        centre_condition = 'Centre IN ("KOL","GUW")'
+    elif ("kolkata" in text and "siliguri" in text) or ("kol" in text and "sil" in text):
+        centre_condition = 'Centre IN ("KOL","SIL")'
+    elif "kolkata" in text or "kol" in text:
         centre_condition = 'Centre = "KOL"'
     elif "guwahati" in text or "guw" in text:
         centre_condition = 'Centre = "GUW"'
     elif re.search(r"\bsiliguri\b", text) or (" sil " in f" {text} "):
-#    elif re.search(r"\bsiliguri\b|\bsil\b", text):
         centre_condition = 'Centre = "SIL"'
+    
+    # -------- AREA DETECTION -------- #
+    area_condition = None
+    is_area_mode = False
+
+    area_condition = ""
+
+    text_clean = f" {text} "
+
+    if re.search(r"\bassam\b", text_clean):
+        area_condition = 'Area = "AS"'
+        is_area_mode = True
+    elif re.search(r"\b(dooars|do|tr)\b", text_clean):
+        area_condition = 'Area IN ("DO","TR")'
+        is_area_mode = True
+    elif re.search(r"\b(ca|tp)\b", text_clean):
+        area_condition = 'Area IN ("CA","TP")'
+        is_area_mode = True
     
     #SaleNo Logic-----------------------------------------------
           
@@ -650,7 +750,32 @@ def build_garden_trend_query(user_input):
     start_year = end_year - (years - 1)
 
     # -------- SQL -------- #
-    query = f"""
+    if is_area_mode:
+
+        query = f"""
+    SELECT
+    CASE WHEN CAST(SUBSTRING(FinYear,1,4) AS INT64) = Season THEN Season ELSE 0 END AS FYear,
+    Case 
+    when Area = "AS" and Centre IN("KOL","GUW") then "AS"
+    when Area IN ("DO","TR") and Centre IN("KOL","SIL") then "DO/TR" 
+    when Area IN ("CA","TP") and Centre IN("KOL","GUW") then "CA/TP" else "" end as AreaAlies,
+    ROUND(SUM(TotalWeight)/100000,2) AS Sold_Qty_LKGS,
+    ROUND(SAFE_DIVIDE(SUM(Value), SUM(TotalWeight)),2) AS AvgPrice
+        
+    FROM `data-warehousing-prod.EasyReports.SaleTransactionView`
+
+    WHERE Season BETWEEN {start_year} AND {end_year} AND EstBlf = "EST" AND Category = "CTC"
+    AND {centre_condition} AND {area_condition}
+    AND IF(SaleNo>=1 AND SaleNo<=13, 53+SaleNo, SaleNo) BETWEEN {start_sale} AND {end_sale}
+
+    GROUP BY FYear,AreaAlies
+
+    HAVING FYear <> 0
+
+    ORDER BY FYear DESC
+    """
+    else:
+        query = f"""
     SELECT
     Case when CAST(substring(FinYear,1,4) as INT64) = Season then Season else 0 end as FYear,
     SellerGroup,
@@ -726,6 +851,10 @@ def is_grade_query(user_input):
     
     return any(word in text for word in ["grade", "gradewise", "grade wise"]) and get_garden_name(user_input) is not None
 
+def is_buyer_query(user_input):
+    text = user_input.lower()
+    return any(word in text for word in ["buyer", "buyergroup"])
+
 if st.button("🚀 Run Smart Query"):
 
     if user_query:
@@ -739,10 +868,16 @@ if st.button("🚀 Run Smart Query"):
                 if is_grade_query(user_query):
                     sql = build_grade_query(user_query)
                     st.info("📊 Grade-wise Mode")
+                    
+                elif is_buyer_query(user_query):   # 🔥 ADD THIS HERE
+                    sql = build_buyer_query(user_query)
+                    st.info("👤 Buyer Ranking Mode")
                 
                 elif re.search(r"\b(20\d{2})\b", text) or ("last" in text and "year" in text):
                     sql = build_garden_trend_query(user_query)
                     st.info("📊 Garden Trend Mode")
+                    
+                    st.session_state["is_area_mode"] = "Sold_Qty_LKGS" in sql
                     
                 elif is_simple_query(user_query):
                     sql = build_fast_query(user_query)
@@ -780,6 +915,9 @@ if "df" in st.session_state:
     if view_type == "Normal":
         st.success("✅ Data fetched")
         st.dataframe(df, use_container_width=True)
+        
+        if st.session_state.get("is_area_mode"):
+            st.caption("📌 Note: Quantity is in Lakh Kgs")
 
     else:
         # 🔥 ONLY Grade Query → Pivot
